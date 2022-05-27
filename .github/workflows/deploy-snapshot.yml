@@ -18,6 +18,6 @@ jobs:
           cache: maven
       - name: Deploy to repository
         env:
-          SONATYPE_USER: ${{ secrets.SONATYPE_USER }}
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
         run: ./mvnw -B clean deploy -Psnapshot -s ./settings.xml -DskipITs -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=WARN
