@@ -84,7 +84,7 @@ final class ParamWriter extends ParameterWriter {
         requireNonNull(value, "value must not be null");
 
         startAvailable(Mode.NUMERIC);
-        builder.append(value.toString());
+        builder.append(value);
     }
 
     @Override
@@ -106,7 +106,7 @@ final class ParamWriter extends ParameterWriter {
         requireNonNull(value, "value must not be null");
 
         startAvailable(Mode.NUMERIC);
-        builder.append(value.toString());
+        builder.append(value);
     }
 
     @Override
@@ -350,11 +350,11 @@ final class ParamWriter extends ParameterWriter {
         }
     }
 
-    static Mono<String> publish(Query query, Parameter[] values) {
+    static Mono<String> publish(Query query, Flux<Parameter> values) {
         return Mono.defer(() -> {
             ParamWriter writer = new ParamWriter(query);
 
-            return OperatorUtils.discardOnCancel(Flux.fromArray(values))
+            return OperatorUtils.discardOnCancel(values)
                 .doOnDiscard(Parameter.class, DISPOSE)
                 .concatMap(it -> it.publishText(writer).doOnSuccess(writer::flushParameter))
                 .then(Mono.fromCallable(writer::toSql));

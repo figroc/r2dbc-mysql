@@ -23,7 +23,6 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZonedDateTime;
 
@@ -46,7 +45,12 @@ public enum MySqlType implements Type {
      */
     DECIMAL(MySqlType.ID_NEW_DECIMAL, BigDecimal.class) {
         @Override
-        public boolean isDecimals() {
+        public boolean isNumeric() {
+            return true;
+        }
+
+        @Override
+        public boolean isFractional() {
             return true;
         }
     },
@@ -56,7 +60,7 @@ public enum MySqlType implements Type {
      */
     TINYINT(MySqlType.ID_TINYINT, Byte.class) {
         @Override
-        public boolean isInt() {
+        public boolean isNumeric() {
             return true;
         }
 
@@ -71,7 +75,7 @@ public enum MySqlType implements Type {
      */
     TINYINT_UNSIGNED(MySqlType.ID_TINYINT, Short.class) {
         @Override
-        public boolean isInt() {
+        public boolean isNumeric() {
             return true;
         }
 
@@ -86,7 +90,7 @@ public enum MySqlType implements Type {
      */
     SMALLINT(MySqlType.ID_SMALLINT, Short.class) {
         @Override
-        public boolean isInt() {
+        public boolean isNumeric() {
             return true;
         }
 
@@ -101,7 +105,7 @@ public enum MySqlType implements Type {
      */
     SMALLINT_UNSIGNED(MySqlType.ID_SMALLINT, Integer.class) {
         @Override
-        public boolean isInt() {
+        public boolean isNumeric() {
             return true;
         }
 
@@ -116,7 +120,7 @@ public enum MySqlType implements Type {
      */
     INT(MySqlType.ID_INT, Integer.class) {
         @Override
-        public boolean isInt() {
+        public boolean isNumeric() {
             return true;
         }
 
@@ -131,7 +135,7 @@ public enum MySqlType implements Type {
      */
     INT_UNSIGNED(MySqlType.ID_INT, Long.class) {
         @Override
-        public boolean isInt() {
+        public boolean isNumeric() {
             return true;
         }
 
@@ -147,7 +151,12 @@ public enum MySqlType implements Type {
      */
     FLOAT(MySqlType.ID_FLOAT, Float.class) {
         @Override
-        public boolean isDecimals() {
+        public boolean isNumeric() {
+            return true;
+        }
+
+        @Override
+        public boolean isFractional() {
             return true;
         }
 
@@ -163,7 +172,12 @@ public enum MySqlType implements Type {
      */
     DOUBLE(MySqlType.ID_DOUBLE, Double.class) {
         @Override
-        public boolean isDecimals() {
+        public boolean isNumeric() {
+            return true;
+        }
+
+        @Override
+        public boolean isFractional() {
             return true;
         }
 
@@ -189,7 +203,7 @@ public enum MySqlType implements Type {
      */
     BIGINT(MySqlType.ID_BIGINT, Long.class) {
         @Override
-        public boolean isInt() {
+        public boolean isNumeric() {
             return true;
         }
 
@@ -204,7 +218,7 @@ public enum MySqlType implements Type {
      */
     BIGINT_UNSIGNED(MySqlType.ID_BIGINT, BigInteger.class) {
         @Override
-        public boolean isInt() {
+        public boolean isNumeric() {
             return true;
         }
 
@@ -219,7 +233,7 @@ public enum MySqlType implements Type {
      */
     MEDIUMINT(MySqlType.ID_MEDIUMINT, Integer.class) {
         @Override
-        public boolean isInt() {
+        public boolean isNumeric() {
             return true;
         }
 
@@ -234,7 +248,7 @@ public enum MySqlType implements Type {
      */
     MEDIUMINT_UNSIGNED(MySqlType.ID_MEDIUMINT, Integer.class) {
         @Override
-        public boolean isInt() {
+        public boolean isNumeric() {
             return true;
         }
 
@@ -257,14 +271,14 @@ public enum MySqlType implements Type {
     /**
      * A date time type. It does not contain timezone. It uses string format to transfer the value.
      */
-    DATETIME(MySqlType.ID_DATETIME, LocalDateTime.class),
+    DATETIME(MySqlType.ID_DATETIME, ZonedDateTime.class),
 
     /**
      * A year type. It contains neither leap year information nor timezone.
      */
     YEAR(MySqlType.ID_YEAR, Short.class) {
         @Override
-        public boolean isInt() {
+        public boolean isNumeric() {
             return true;
         }
 
@@ -596,15 +610,6 @@ public enum MySqlType implements Type {
     }
 
     /**
-     * Checks if this type is an integer. The {@link #YEAR} is an 16-bits integer.
-     *
-     * @return if it is an integer type.
-     */
-    public boolean isInt() {
-        return false;
-    }
-
-    /**
      * Checks if this type is a BLOB or CLOB.
      *
      * @return if it is a BLOB/CLOB type.
@@ -628,12 +633,21 @@ public enum MySqlType implements Type {
     }
 
     /**
-     * Checks if this type can be decoded as a decimal number. This means that it may have the scale of the
-     * column.
+     * Checks if this type is a numeric type. The {@link #YEAR} is an 16-bits integer.
      *
-     * @return if it is a decimal type.
+     * @return if it is a numeric type.
      */
-    public boolean isDecimals() {
+    public boolean isNumeric() {
+        return false;
+    }
+
+    /**
+     * Checks if this type can be decoded as a fractional number.  This means that it may have the scale of
+     * the column.
+     *
+     * @return if it is a fractional type.
+     */
+    public boolean isFractional() {
         return false;
     }
 

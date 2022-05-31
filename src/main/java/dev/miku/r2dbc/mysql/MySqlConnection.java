@@ -31,14 +31,15 @@ import io.r2dbc.spi.IsolationLevel;
 import io.r2dbc.spi.TransactionDefinition;
 import io.r2dbc.spi.ValidationDepth;
 import org.reactivestreams.Publisher;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SynchronousSink;
+import reactor.util.Logger;
+import reactor.util.Loggers;
 import reactor.util.annotation.Nullable;
 
 import java.time.DateTimeException;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.function.BiConsumer;
@@ -53,7 +54,7 @@ import static dev.miku.r2dbc.mysql.util.AssertUtils.requireValidName;
  */
 public final class MySqlConnection implements Connection, ConnectionState {
 
-    private static final Logger logger = LoggerFactory.getLogger(MySqlConnection.class);
+    private static final Logger logger = Loggers.getLogger(MySqlConnection.class);
 
     private static final int DEFAULT_LOCK_WAIT_TIMEOUT = 50;
 
@@ -441,16 +442,17 @@ public final class MySqlConnection implements Connection, ConnectionState {
     static Mono<MySqlConnection> init(Client client, Codecs codecs, ConnectionContext context,
         QueryCache queryCache, PrepareCache prepareCache, @Nullable Predicate<String> prepare) {
         ServerVersion version = context.getServerVersion();
-        StringBuilder query = new StringBuilder(128);
+        MySqlSyntheticBatch init = new MySqlSyntheticBatch(client, codecs, context);
 
         // Maybe create a InitFlow for data initialization after login?
+        StringBuilder query = new StringBuilder("SELECT ");
         if (version.isGreaterThanOrEqualTo(TRAN_LEVEL_8X) ||
             (version.isGreaterThanOrEqualTo(TRAN_LEVEL_5X) && version.isLessThan(TX_LEVEL_8X))) {
-            query.append(
-                "SELECT @@transaction_isolation AS i,@@innodb_lock_wait_timeout AS l,@@version_comment AS v");
+            query.append("@@transaction_isolation");
         } else {
-            query.append("SELECT @@tx_isolation AS i,@@innodb_lock_wait_timeout AS l,@@version_comment AS v");
+            query.append("@@tx_isolation");
         }
+        query.append(" AS i,@@innodb_lock_wait_timeout AS l,@@version_comment AS v");
 
         Function<MySqlResult, Publisher<InitData>> handler;
 
@@ -458,12 +460,16 @@ public final class MySqlConnection implements Connection, ConnectionState {
             query.append(",@@system_time_zone AS s,@@time_zone AS t");
             handler = FULL_INIT;
         } else {
+            String offset = Instant.now().atZone(context.getServerZoneId()).getOffset().getId();
+            if ("Z".equals(offset)) offset = "+00:00";
+            init.add("SET time_zone = '" + offset + "'");
             handler = INIT_HANDLER;
         }
 
-        return new TextSimpleStatement(client, codecs, context, query.toString())
+        return init.add(query.toString())
             .execute()
-            .flatMap(handler)
+            .last()
+            .flatMapMany(handler)
             .last()
             .map(data -> {
                 ZoneId serverZoneId = data.serverZoneId;

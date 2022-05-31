@@ -24,21 +24,27 @@ import dev.miku.r2dbc.mysql.constant.TlsVersions;
 import dev.miku.r2dbc.mysql.message.server.SyntheticSslResponseMessage;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.ssl.IdentityCipherSuiteFilter;
+import io.netty.handler.ssl.OpenSsl;
+import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import reactor.netty.tcp.SslProvider;
+import reactor.util.Logger;
+import reactor.util.Loggers;
 
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
 import java.io.File;
 import java.net.InetSocketAddress;
+import java.util.function.Consumer;
 
 import static dev.miku.r2dbc.mysql.util.AssertUtils.requireNonNull;
+import static io.netty.handler.ssl.SslProvider.JDK;
+import static io.netty.handler.ssl.SslProvider.OPENSSL;
 
 /**
  * A handler for build SSL handler and bridging.
@@ -49,17 +55,21 @@ final class SslBridgeHandler extends ChannelDuplexHandler {
 
     private static final String SSL_NAME = "R2dbcMySqlSslHandler";
 
-    private static final Logger logger = LoggerFactory.getLogger(SslBridgeHandler.class);
+    private static final Logger logger = Loggers.getLogger(SslBridgeHandler.class);
 
-    /**
-     * Lowest version of community edition for TLSv1.2 support.
-     */
-    private static final ServerVersion TLS1_2_COMMUNITY_VER = ServerVersion.create(8, 0, 4);
+    private static final String[] TLS_PROTOCOLS = new String[] {
+        TlsVersions.TLS1_3, TlsVersions.TLS1_2, TlsVersions.TLS1_1, TlsVersions.TLS1
+    };
 
-    /**
-     * Lowest version of enterprise edition for TLSv1.2 support. See {@link ServerVersion#isEnterprise()}.
-     */
-    private static final ServerVersion TLS1_2_ENTERPRISE_VER = ServerVersion.create(5, 6, 0);
+    private static final String[] OLD_TLS_PROTOCOLS = new String[] { TlsVersions.TLS1_1, TlsVersions.TLS1 };
+
+    private static final ServerVersion VER_5_6_0 = ServerVersion.create(5, 6, 0);
+
+    private static final ServerVersion VER_5_6_46 = ServerVersion.create(5, 6, 46);
+
+    private static final ServerVersion VER_5_7_0 = ServerVersion.create(5, 7, 0);
+
+    private static final ServerVersion VER_5_7_28 = ServerVersion.create(5, 7, 28);
 
     private final ConnectionContext context;
 
@@ -116,7 +126,7 @@ final class SslBridgeHandler extends ChannelDuplexHandler {
                     "' could not be verified"));
                 return;
             }
-            // Otherwise verify success, continue subsequence logic.
+            // Otherwise, verify success, continue subsequence logic.
         }
 
         if (mode != SslMode.TUNNEL) {
@@ -133,7 +143,9 @@ final class SslBridgeHandler extends ChannelDuplexHandler {
             case BRIDGING:
                 logger.debug("SSL event triggered, enable SSL handler to pipeline");
 
-                SslProvider sslProvider = buildProvider(ssl, context.getServerVersion());
+                SslProvider sslProvider = SslProvider.builder()
+                    .sslContext(MySqlSslContextSpec.forClient(ssl, context.getServerVersion()))
+                    .build();
                 SslHandler sslHandler = sslProvider.getSslContext().newHandler(ctx.alloc());
 
                 this.sslEngine = sslHandler.engine();
@@ -147,7 +159,7 @@ final class SslBridgeHandler extends ChannelDuplexHandler {
                 ctx.pipeline().remove(NAME);
                 break;
         }
-        // Ignore another custom SSL states because they are useless.
+        // Ignore another unknown SSL states because it should not throw an exception.
     }
 
     private HostnameVerifier hostnameVerifier() {
@@ -155,60 +167,79 @@ final class SslBridgeHandler extends ChannelDuplexHandler {
         return verifier == null ? DefaultHostnameVerifier.INSTANCE : verifier;
     }
 
-    private static SslProvider buildProvider(MySqlSslConfiguration ssl, ServerVersion version) {
-        return SslProvider.builder()
-            .sslContext(buildContext(ssl, version))
-            .defaultConfiguration(SslProvider.DefaultConfigurationType.TCP)
-            .build();
+    private static boolean isCurrentTlsEnabled(ServerVersion version) {
+        // See also https://dev.mysql.com/doc/connector-j/8.0/en/connector-j-reference-using-ssl.html
+        // Quoting fragment: TLSv1,TLSv1.1,TLSv1.2,TLSv1.3 for MySQL Community Servers 8.0, 5.7.28 and
+        // later, and 5.6.46 and later, and for all commercial versions of MySQL Servers.
+        return version.isGreaterThanOrEqualTo(VER_5_7_28)
+            || (version.isGreaterThanOrEqualTo(VER_5_6_46) && version.isLessThan(VER_5_7_0))
+            || (version.isGreaterThanOrEqualTo(VER_5_6_0) && version.isEnterprise());
     }
 
-    private static SslContextBuilder buildContext(MySqlSslConfiguration ssl, ServerVersion version) {
-        SslContextBuilder builder = withTlsVersion(SslContextBuilder.forClient(), ssl, version);
-        String sslKey = ssl.getSslKey();
+    private static final class MySqlSslContextSpec implements SslProvider.ProtocolSslContextSpec {
 
-        if (sslKey != null) {
-            CharSequence keyPassword = ssl.getSslKeyPassword();
-            String sslCert = ssl.getSslCert();
+        private final SslContextBuilder builder;
 
-            if (sslCert == null) {
-                throw new IllegalStateException("SSL key param requires but SSL cert param to be present");
+        private MySqlSslContextSpec(SslContextBuilder builder) { this.builder = builder; }
+
+        @Override
+        public MySqlSslContextSpec configure(Consumer<SslContextBuilder> customizer) {
+            requireNonNull(customizer, "customizer must not be null");
+
+            customizer.accept(builder);
+
+            return this;
+        }
+
+        @Override
+        public SslContext sslContext() throws SSLException {
+            return builder.build();
+        }
+
+        static MySqlSslContextSpec forClient(MySqlSslConfiguration ssl, ServerVersion version) {
+            // Same default configuration as TcpSslContextSpec.
+            SslContextBuilder builder = SslContextBuilder.forClient()
+                .sslProvider(OpenSsl.isAvailable() ? OPENSSL : JDK)
+                .ciphers(null, IdentityCipherSuiteFilter.INSTANCE)
+                .applicationProtocolConfig(null);
+            String[] tlsProtocols = ssl.getTlsVersion();
+
+            if (tlsProtocols.length > 0) {
+                builder.protocols(tlsProtocols);
+            } else if (isCurrentTlsEnabled(version)) {
+                builder.protocols(TLS_PROTOCOLS);
+            } else {
+                // Not sure if we need to check the JDK version, suggest not.
+                logger.warn("MySQL {} does not support TLS1.2, TLS1.1 is disabled in latest JDKs", version);
+                builder.protocols(OLD_TLS_PROTOCOLS);
             }
 
-            builder.keyManager(new File(sslCert), new File(sslKey), keyPassword == null ? null :
-                keyPassword.toString());
-        }
+            String sslKey = ssl.getSslKey();
 
-        if (ssl.getSslMode().verifyCertificate()) {
-            String sslCa = ssl.getSslCa();
+            if (sslKey != null) {
+                CharSequence keyPassword = ssl.getSslKeyPassword();
+                String sslCert = ssl.getSslCert();
 
-            if (sslCa != null) {
-                builder.trustManager(new File(sslCa));
+                if (sslCert == null) {
+                    throw new IllegalStateException("SSL key present but client cert does not exist");
+                }
+
+                builder.keyManager(new File(sslCert), new File(sslKey),
+                    keyPassword == null ? null : keyPassword.toString());
             }
-            // Otherwise use default algorithm with trust manager.
-        } else {
-            builder.trustManager(InsecureTrustManagerFactory.INSTANCE);
+
+            if (ssl.getSslMode().verifyCertificate()) {
+                String sslCa = ssl.getSslCa();
+
+                if (sslCa != null) {
+                    builder.trustManager(new File(sslCa));
+                }
+                // Otherwise, use default algorithm with trust manager.
+            } else {
+                builder.trustManager(InsecureTrustManagerFactory.INSTANCE);
+            }
+
+            return new MySqlSslContextSpec(ssl.customizeSslContext(builder));
         }
-
-        return ssl.customizeSslContext(builder);
-    }
-
-    private static SslContextBuilder withTlsVersion(SslContextBuilder builder, MySqlSslConfiguration ssl,
-        ServerVersion version) {
-        String[] tlsProtocols = ssl.getTlsVersion();
-
-        if (tlsProtocols.length > 0) {
-            builder.protocols(tlsProtocols);
-        } else if (isEnabledTls1_2(version)) {
-            builder.protocols(TlsVersions.TLS1_2, TlsVersions.TLS1_1, TlsVersions.TLS1);
-        } else {
-            builder.protocols(TlsVersions.TLS1_1, TlsVersions.TLS1);
-        }
-
-        return builder;
-    }
-
-    private static boolean isEnabledTls1_2(ServerVersion version) {
-        return version.isGreaterThanOrEqualTo(TLS1_2_COMMUNITY_VER) ||
-            (version.isGreaterThanOrEqualTo(TLS1_2_ENTERPRISE_VER) && version.isEnterprise());
     }
 }
